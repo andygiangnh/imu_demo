@@ -73,10 +73,12 @@ COMMANDS:
 - '.' : Get current angles (roll, pitch, yaw)
 - 'z' : Reset yaw to 0° and update magnetometer reference
 - 'm' : Calibrate magnetometer (rotate device for 30 seconds)
+      - Response: m1 = in progress, m2 = completed
 - 'r' : Show raw sensor data
 - 'a' : Show adaptive filter status and debug info
 - 'h' : Show current magnetometer heading
-- 'c' : Recalibrate gyroscope
+- 'c' : Recalibrate gyroscope (keep device still)
+      - Response: c1 = in progress, c2 = completed, c3 = failed
 
 BENEFITS:
 ================================================================================
@@ -170,7 +172,7 @@ void setup() {
   Serial.print("Initial reference heading set to: ");
   Serial.println(magReferenceHeading, 2);
   
-  Serial.println("System ready. Commands: '.' = angles, 'z' = reset Z, 'm' = mag cal, 'a' = adaptive filter status.");
+  Serial.println("System ready. Commands: '.' = angles, 'z' = reset Z, 'm' = mag cal (m1/m2), 'c' = gyro cal (c1/c2/c3)");
 }
 
 void loop() {
@@ -314,21 +316,16 @@ void loop() {
     
     // Magnetometer calibration
     if (rx_char == 'm') {
-      Serial.println("Starting magnetometer calibration...");
-      Serial.println("Rotate the sensor in all directions for 30 seconds!");
       digitalWrite(13, HIGH);
       calibrateMagnetometer();
       digitalWrite(13, LOW);
-      Serial.println("Magnetometer calibration complete!");
     }
     
     // Recalibrate gyroscope
     if (rx_char == 'c') {
-      Serial.println("Recalibrating gyroscope...");
       digitalWrite(13, HIGH);
       calibrate();
       digitalWrite(13, LOW);
-      Serial.println("Recalibration complete!");
     }
     
     // Show magnetometer heading
@@ -351,7 +348,7 @@ void calibrate() {
   float xSum = 0, ySum = 0, zSum = 0;
   int validSamples = 0;
   
-  Serial.print("Calibrating");
+  Serial.println("c1");  // Gyroscope calibration in progress
   
   for (int i = 0; i < calibrationSamples; i++) {
     if (IMU.gyroscopeAvailable()) {
@@ -363,9 +360,9 @@ void calibrate() {
       zSum += z;
       validSamples++;
       
-      // Progress indicator
-      if (i % 50 == 0) {
-        Serial.print(".");
+      // Progress indicator every 100 samples
+      if (i % 100 == 0) {
+        Serial.println("c1");  // Progress update
       }
     }
     delay(5); // Small delay between readings
@@ -377,15 +374,9 @@ void calibrate() {
     gyrZoffs = zSum / validSamples;
     isCalibrated = true;
     
-    Serial.println();
-    Serial.print("Calibration offsets - X: ");
-    Serial.print(gyrXoffs, 4);
-    Serial.print(", Y: ");
-    Serial.print(gyrYoffs, 4);
-    Serial.print(", Z: ");
-    Serial.println(gyrZoffs, 4);
+    Serial.println("c2");  // Gyroscope calibration done
   } else {
-    Serial.println("\nCalibration failed - no gyro data available");
+    Serial.println("c3");  // Gyroscope calibration failed
     isCalibrated = false;
   }
 }
@@ -472,9 +463,10 @@ void calibrateMagnetometer() {
   unsigned long startTime = millis();
   int sampleCount = 0;
   
-  Serial.println("Rotate the sensor in all directions...");
+  Serial.println("m1");  // Magnetometer calibration in progress
   
   // Collect data for 30 seconds
+  unsigned long lastProgressTime = millis();
   while (millis() - startTime < 30000) {
     if (IMU.magneticFieldAvailable()) {
       float mx, my, mz;
@@ -490,11 +482,18 @@ void calibrateMagnetometer() {
       
       sampleCount++;
       
-      // Progress indicator
+      // Progress indicator every 100 samples (more frequent updates)
       if (sampleCount % 100 == 0) {
-        Serial.print(".");
+        Serial.println("m1");  // Progress update
       }
     }
+    
+    // Time-based progress indicator every 3 seconds as backup
+    if (millis() - lastProgressTime > 3000) {
+      Serial.println("m1");  // Progress update
+      lastProgressTime = millis();
+    }
+    
     delay(10);
   }
   
@@ -515,19 +514,5 @@ void calibrateMagnetometer() {
   magYscale = avgRange / magYrange;
   magZscale = avgRange / magZrange;
   
-  Serial.println();
-  Serial.println("Magnetometer calibration values:");
-  Serial.print("X offset: "); Serial.print(magXoffs, 3);
-  Serial.print(", scale: "); Serial.println(magXscale, 3);
-  Serial.print("Y offset: "); Serial.print(magYoffs, 3);
-  Serial.print(", scale: "); Serial.println(magYscale, 3);
-  Serial.print("Z offset: "); Serial.print(magZoffs, 3);
-  Serial.print(", scale: "); Serial.println(magZscale, 3);
-  Serial.print("Samples collected: "); Serial.println(sampleCount);
-  
-  // Set the reference heading after calibration
-  delay(100); // Brief delay to ensure calibration is applied
-  magReferenceHeading = calculateTiltCompensatedHeading();
-  Serial.print("Reference heading set to: ");
-  Serial.println(magReferenceHeading, 2);
+  Serial.println("m2");  // Magnetometer calibration done
 }

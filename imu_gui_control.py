@@ -287,6 +287,8 @@ class IMUControlGUI:
         # GUI state
         self.simulation_running = False
         self.pygame_thread = None
+        self.calibration_status = "idle"  # "idle", "gyro", "mag"
+        self.calibration_thread = None
         
         self.setup_gui()
         # Show initial instructions
@@ -354,21 +356,26 @@ class IMUControlGUI:
         quick_frame = ttk.LabelFrame(control_frame, text="Quick Commands", padding=5)
         quick_frame.pack(fill=tk.X, pady=(0, 10))
         
+        # Store button references for state management
+        self.command_buttons = {}
+        
         commands = [
             ("Get Angles", "."),
             ("Reset Yaw", "z"),
             ("Raw Data", "r"),
             ("Heading", "h"),
-            ("Calibrate Mag", "m"),
-            ("Calibrate Gyro", "c")
+            ("🧭 Cal Mag", "m"),
+            ("🔄 Cal Gyro", "c")
         ]
         
         for i, (text, cmd) in enumerate(commands):
             row = i // 2
             col = i % 2
+            # Fix lambda closure issue by using default parameter
             btn = ttk.Button(quick_frame, text=text, 
                            command=lambda c=cmd: self.send_quick_command(c))
             btn.grid(row=row, column=col, padx=2, pady=2, sticky="ew")
+            self.command_buttons[cmd] = btn  # Store reference for state management
         
         # Configure grid weights for even spacing
         for col in range(2):
@@ -394,6 +401,13 @@ class IMUControlGUI:
         self.yaw_btn.pack(side=tk.RIGHT)
         self.yaw_btn.configure(state='disabled')  # Disabled until simulation starts
         
+        # Emergency controls
+        emergency_frame = ttk.Frame(button_frame)
+        emergency_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        ttk.Button(emergency_frame, text="🔓 Enable All Buttons", 
+                  command=self.enable_command_buttons).pack(side=tk.RIGHT)
+        
         # Response display - Place AFTER buttons so it doesn't hide them
         response_frame = ttk.LabelFrame(control_frame, text="Arduino Response", padding=5)
         response_frame.pack(fill=tk.BOTH, expand=True)
@@ -411,6 +425,12 @@ class IMUControlGUI:
                 self.ser.close()
             
             self.ser = serial.Serial(self.serial_port, self.baud_rate, timeout=1)
+            
+            # Clear any buffered data and wait for Arduino to be ready
+            time.sleep(2)  # Wait for Arduino to initialize
+            self.ser.flushInput()  # Clear input buffer
+            self.ser.flushOutput()  # Clear output buffer
+            
             self.connection_status.configure(text=f"Connected to {self.serial_port}", foreground="green")
             self.log_response(f"Connected to {self.serial_port} at {self.baud_rate} baud")
             
@@ -447,21 +467,124 @@ class IMUControlGUI:
             
         try:
             self.ser.write(command.encode())
-            self.log_response(f"Sent: {command}")
+            self.log_response(f"Sent: '{command}'")  # Added quotes for clarity
             
+            # Handle calibration commands specially
+            if command == 'c':
+                self.log_response("→ Starting gyroscope calibration monitoring...")
+                self.start_calibration_monitoring("gyro")
+            elif command == 'm':
+                self.log_response("→ Starting magnetometer calibration monitoring...")
+                self.start_calibration_monitoring("mag")
             # For commands that expect a response, read it
-            if command in ['.', 'r', 'h', 'a']:
+            elif command in ['.', 'r', 'h', 'a']:
                 threading.Thread(target=self.read_response, daemon=True).start()
                 
         except Exception as e:
             self.log_response(f"Error sending command: {e}")
     
+    def disable_command_buttons(self):
+        """Disable all command buttons during calibration"""
+        for btn in self.command_buttons.values():
+            btn.configure(state='disabled')
+            
+    def enable_command_buttons(self):
+        """Enable all command buttons after calibration"""
+        for btn in self.command_buttons.values():
+            btn.configure(state='normal')
+    
+    def start_calibration_monitoring(self, cal_type):
+        """Start monitoring calibration progress"""
+        self.calibration_status = cal_type
+        self.disable_command_buttons()  # Disable buttons during calibration
+        if cal_type == "gyro":
+            self.log_response("🔄 Starting gyroscope calibration - keep sensor still!")
+        else:
+            self.log_response("🧭 Starting magnetometer calibration - rotate sensor in all directions!")
+        
+        # Start a thread to monitor calibration
+        self.calibration_thread = threading.Thread(target=self.monitor_calibration, daemon=True)
+        self.calibration_thread.start()
+    
+    def monitor_calibration(self):
+        """Monitor calibration progress and display status"""
+        start_time = time.time()
+        timeout = 60  # 60 second timeout for calibration
+        
+        try:
+            while self.calibration_status != "idle":
+                # Check for timeout
+                if time.time() - start_time > timeout:
+                    self.log_response("\n⚠️ Calibration timeout - re-enabling buttons")
+                    break
+                    
+                if self.ser and self.ser.is_open:
+                    if self.ser.in_waiting > 0:
+                        try:
+                            line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                            if line:
+                                self.process_calibration_message(line)
+                        except UnicodeDecodeError:
+                            continue
+                
+                # Small delay to prevent excessive CPU usage
+                threading.Event().wait(0.1)
+        except Exception as e:
+            self.log_response(f"Error monitoring calibration: {e}")
+        finally:
+            self.calibration_status = "idle"
+            self.enable_command_buttons()  # Ensure buttons are re-enabled
+    
+    def process_calibration_message(self, message):
+        """Process calibration status messages using new concise protocol only"""
+        # New concise protocol
+        if message == "c1":
+            # Gyroscope calibration in progress
+            self.log_response_append(".")  # Progress indicator
+        elif message == "c2":
+            # Gyroscope calibration completed
+            self.log_response("\n✅ Gyroscope calibration completed!")
+            self.calibration_status = "idle"
+            self.enable_command_buttons()  # Re-enable buttons
+        elif message == "c3":
+            # Gyroscope calibration failed
+            self.log_response("\n❌ Gyroscope calibration failed!")
+            self.calibration_status = "idle"
+            self.enable_command_buttons()  # Re-enable buttons
+        elif message == "m1":
+            # Magnetometer calibration in progress
+            self.log_response_append(".")  # Progress indicator
+        elif message == "m2":
+            # Magnetometer calibration completed
+            self.log_response("\n✅ Magnetometer calibration completed!")
+            self.calibration_status = "idle"
+            self.enable_command_buttons()  # Re-enable buttons
+        elif message and len(message) > 2:
+            # Regular Arduino message (longer than status codes)
+            self.log_response(f"Arduino: {message}")
+    
+    def log_response_append(self, text):
+        """Append text to the last line in response area (for progress dots)"""
+        self.response_text.insert(tk.END, text)
+        self.response_text.see(tk.END)
+        self.response_text.update_idletasks()
+    
     def read_response(self):
         """Read response from Arduino (runs in separate thread)"""
         try:
+            # Clear any buffered data first
+            time.sleep(0.1)  # Give Arduino time to respond
+            
+            # Read the actual response
             response = self.ser.readline().decode().strip()
             if response:
                 self.log_response(f"Arduino: {response}")
+            else:
+                # If no response, try once more
+                time.sleep(0.1)
+                response = self.ser.readline().decode().strip()
+                if response:
+                    self.log_response(f"Arduino: {response}")
         except Exception as e:
             self.log_response(f"Error reading response: {e}")
     
@@ -540,6 +663,7 @@ class IMUControlGUI:
     def on_closing(self):
         """Handle window closing"""
         self.stop_simulation()
+        self.calibration_status = "idle"  # Stop calibration monitoring
         if self.ser and self.ser.is_open:
             self.ser.close()
         self.root.destroy()
