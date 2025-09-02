@@ -117,6 +117,9 @@ float magXscale = 1.0, magYscale = 1.0, magZscale = 1.0;
 
 // magnetometer reference heading for relative tracking
 float magReferenceHeading = 0;
+float magPreviousHeading = 0;      // Previous magnetometer heading for change detection
+float magFieldStrength = 0;        // Current magnetic field strength
+float magReferenceFieldStrength = 0; // Reference magnetic field strength
 
 // Adaptive yaw filter variables
 float gyrZprev = 0;                    // Previous gyro Z reading for derivative calculation
@@ -125,6 +128,12 @@ float gyrZderivativeThreshold = 10.0;  // Threshold for high movement detection 
 unsigned long lastStableTime = 0;     // Time when movement became stable
 unsigned long stableWaitTime = 200;   // Wait time before applying mag correction (ms)
 bool inHighMovement = false;          // Flag for high movement state
+
+// Magnetic environment change detection
+float magHeadingChangeThreshold = 15.0;  // Threshold for sudden heading changes (degrees)
+float magFieldChangeThreshold = 0.15;    // Threshold for magnetic field strength changes (15%)
+bool magEnvironmentChanged = false;      // Flag for magnetic environment change
+unsigned long magEnvironmentChangeTime = 0; // Time when environment change was detected
 
 // calibration variables
 bool isCalibrated = false;
@@ -166,9 +175,11 @@ void setup() {
   digitalWrite(13, LOW);
   Serial.println("Calibration complete!");
   
-  // Set initial magnetometer reference heading
+  // Set initial magnetometer reference heading and field strength
   delay(200); // Brief delay to ensure sensors are stable
   magReferenceHeading = calculateTiltCompensatedHeading();
+  magPreviousHeading = magReferenceHeading;
+  magReferenceFieldStrength = calculateMagneticFieldStrength();
   Serial.print("Initial reference heading set to: ");
   Serial.println(magReferenceHeading, 2);
   
@@ -200,6 +211,34 @@ void loop() {
   // STEP 2: CALCULATE MAGNETOMETER HEADING (TILT-COMPENSATED)
   // ============================================================================
   mag_heading = calculateTiltCompensatedHeading();
+  magFieldStrength = calculateMagneticFieldStrength();
+  
+  // Detect sudden magnetic environment changes
+  float headingChange = abs(mag_heading - magPreviousHeading);
+  if (headingChange > 180) headingChange = 360 - headingChange; // Handle wraparound
+  
+  float fieldChange = abs(magFieldStrength - magReferenceFieldStrength) / magReferenceFieldStrength;
+  
+  // Check for sudden magnetic environment change
+  if (headingChange > magHeadingChangeThreshold || fieldChange > magFieldChangeThreshold) {
+    if (!magEnvironmentChanged) {
+      magEnvironmentChanged = true;
+      magEnvironmentChangeTime = millis();
+      Serial.println("Warning: Magnetic environment change detected!");
+    }
+  }
+  
+  // Reset environment change flag after 3 seconds of stable readings
+  if (magEnvironmentChanged && (millis() - magEnvironmentChangeTime > 3000) && 
+      headingChange < 5.0 && fieldChange < 0.05) {
+    magEnvironmentChanged = false;
+    // Gradually update reference to new environment
+    magReferenceHeading = magReferenceHeading * 0.9 + mag_heading * 0.1;
+    magReferenceFieldStrength = magReferenceFieldStrength * 0.9 + magFieldStrength * 0.1;
+    Serial.println("Magnetic environment stabilized - reference updated");
+  }
+  
+  magPreviousHeading = mag_heading;
   
   // Calculate relative heading change from reference (not absolute north)
   // This prevents the device from drifting back to north-facing orientation
@@ -246,10 +285,11 @@ void loop() {
   gy = gy * 0.96 + ay * 0.04;
   
   // YAW: Adaptive filter (gyroscope + magnetometer)
-  if (inHighMovement) {
-    // HIGH MOVEMENT STATE: Use 100% gyroscope
+  if (inHighMovement || magEnvironmentChanged) {
+    // HIGH MOVEMENT STATE OR MAGNETIC ENVIRONMENT CHANGE: Use 100% gyroscope
     // - Provides immediate response to fast rotations
     // - Eliminates magnetometer lag and noise during movement
+    // - Prevents corrections during magnetic environment changes (e.g., moving near metal objects)
     // - gz already integrated above, no correction applied
   } else {
     // STABLE STATE: Wait, then apply magnetometer correction
@@ -281,8 +321,10 @@ void loop() {
     // Reset Z axis (yaw)
     if (rx_char == 'z') {
       gz = 0;
-      // Also reset the magnetometer reference to current heading
+      // Also reset the magnetometer reference to current heading and field strength
       magReferenceHeading = calculateTiltCompensatedHeading();
+      magReferenceFieldStrength = calculateMagneticFieldStrength();
+      magEnvironmentChanged = false; // Reset environment change flag
       Serial.println("Z axis reset and magnetometer reference updated");
     }
     
@@ -308,10 +350,16 @@ void loop() {
       Serial.print(gyrZderivative, 2);
       Serial.print(" | High Movement: ");
       Serial.print(inHighMovement ? "YES" : "NO");
+      Serial.print(" | Mag Environment Changed: ");
+      Serial.print(magEnvironmentChanged ? "YES" : "NO");
       Serial.print(" | Time since stable: ");
       Serial.print(millis() - lastStableTime);
       Serial.print("ms | Mag correction: ");
-      Serial.println((inHighMovement || (millis() - lastStableTime < stableWaitTime)) ? "DISABLED" : "ENABLED");
+      Serial.println((inHighMovement || magEnvironmentChanged || (millis() - lastStableTime < stableWaitTime)) ? "DISABLED" : "ENABLED");
+      Serial.print("Mag Field Strength: ");
+      Serial.print(magFieldStrength, 3);
+      Serial.print(" | Reference: ");
+      Serial.println(magReferenceFieldStrength, 3);
     }
     
     // Magnetometer calibration
@@ -452,6 +500,11 @@ float calculateTiltCompensatedHeading() {
   }
   
   return heading;
+}
+
+float calculateMagneticFieldStrength() {
+  // Calculate the magnitude of the magnetic field vector
+  return sqrt(magX * magX + magY * magY + magZ * magZ);
 }
 
 // Magnetometer calibration function
