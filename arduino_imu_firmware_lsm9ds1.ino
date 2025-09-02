@@ -11,13 +11,14 @@ accurate orientation tracking with minimal drift and optimal noise reduction.
 SENSOR FUSION ALGORITHM DETAILS:
 ================================================================================
 
-1. ROLL & PITCH (X & Y AXES) - KALMAN FILTER:
+1. ROLL & PITCH (X & Y AXES) - KALMAN FILTER (PROPER MATRIX IMPLEMENTATION):
    - Uses accelerometer for absolute reference (gravity vector)
    - Uses gyroscope for responsive short-term tracking
-   - Kalman filter optimally combines both sensors with adaptive weighting
-   - Process noise (Q_angle): 0.001, (Q_bias): 0.003
-   - Measurement noise (R_measure): 0.03
-   - Automatically adjusts trust between sensors based on uncertainty
+   - Full matrix-based Kalman filter with proper covariance matrices
+   - Process noise covariance Q (2x2): models uncertainty in state evolution
+   - Measurement noise covariance R (scalar): models accelerometer noise
+   - State vector: [angle, gyro_bias]'
+   - Automatic bias correction and optimal sensor fusion
 
 2. YAW (Z AXIS) - DIRECT MAGNETOMETER CALCULATION:
    - Uses magnetometer readings directly for yaw calculation
@@ -43,9 +44,12 @@ KALMAN FILTER ADVANTAGES:
 KEY PARAMETERS:
 ================================================================================
 - FREQ: 30.0 Hz - Main loop frequency
-- Q_angle: 0.001 - Process noise variance for accelerometer
-- Q_bias: 0.003 - Process noise variance for gyroscope bias
-- R_measure: 0.03 - Measurement noise variance
+- Q[0][0]: 0.01 - Process noise variance for angle estimation
+- Q[1][1]: 0.005 - Process noise variance for gyroscope bias
+- R: 0.5 - Measurement noise variance (accelerometer)
+- State vector: [angle, bias]' (2x1)
+- Process noise covariance Q (2x2 matrix)
+- Measurement noise covariance R (scalar)
 - Magnetic declination: -10° 13' (adjust for your location)
 
 COMMANDS:
@@ -56,9 +60,9 @@ COMMANDS:
 - 'r' : Show raw sensor data
 - 'c' : Recalibrate gyroscope
 - 'q' : Show Kalman filter parameters and tuning commands
-- '1'/'2' : Increase/decrease Q_angle (accelerometer trust)
-- '3'/'4' : Increase/decrease Q_bias (bias correction speed)
-- '5'/'6' : Increase/decrease R_measure (gyroscope trust)
+- '1'/'2' : Increase/decrease Q[0][0] (angle process noise)
+- '3'/'4' : Increase/decrease Q[1][1] (bias process noise)  
+- '5'/'6' : Increase/decrease R (measurement noise)
 
 BENEFITS:
 ================================================================================
@@ -94,11 +98,22 @@ float gyrXoffs = 0, gyrYoffs = 0, gyrZoffs = 0;
 float magXoffs = 0, magYoffs = 0, magZoffs = 0;
 float magXscale = 1.0, magYscale = 1.0, magZscale = 1.0;
 
-// --- KALMAN FILTER PARAMETERS ---
-// Tuned for smooth, responsive movement tracking
-float Q_angle = 0.01;   // Process noise variance for the accelerometer (increased for responsiveness)
-float Q_bias = 0.005;   // Process noise variance for the gyroscope bias (slightly increased)
-float R_measure = 0.5;  // Measurement noise variance (increased to trust gyro more during movement)
+// --- KALMAN FILTER PARAMETERS (PROPER MATRIX IMPLEMENTATION) ---
+// Process noise covariance matrix Q (2x2) - models uncertainty in the process
+float Q[2][2] = {
+  {0.01, 0.0},    // Q11: angle process noise variance, Q12: angle-bias cross-correlation
+  {0.0, 0.005}    // Q21: bias-angle cross-correlation, Q22: bias process noise variance
+};
+
+// Measurement noise covariance R (scalar for 1D measurement)
+float R = 0.5;  // Measurement noise variance (accelerometer noise)
+
+// State transition matrix F (2x2) - how state evolves over time
+// F = [1, -dt]  where dt is time step
+//     [0,  1 ]
+
+// Measurement matrix H (1x2) - how measurement relates to state
+// H = [1, 0] - we measure angle directly, not bias
 
 // Kalman filter state variables for pitch (X axis)
 float pitchAngle = 0, pitchBias = 0, pitchRate = 0;
@@ -239,43 +254,43 @@ void loop() {
     
     // Kalman filter parameter tuning commands
     if (rx_char == 'q') {
-      Serial.println("Kalman Filter Parameters:");
-      Serial.print("Q_angle: "); Serial.println(Q_angle, 4);
-      Serial.print("Q_bias: "); Serial.println(Q_bias, 4);
-      Serial.print("R_measure: "); Serial.println(R_measure, 4);
-      Serial.println("Commands: '1'=Q_angle+, '2'=Q_angle-, '3'=Q_bias+, '4'=Q_bias-, '5'=R_measure+, '6'=R_measure-");
+      Serial.println("Kalman Filter Parameters (Matrix Implementation):");
+      Serial.print("Q[0][0] (angle process noise): "); Serial.println(Q[0][0], 4);
+      Serial.print("Q[1][1] (bias process noise): "); Serial.println(Q[1][1], 4);
+      Serial.print("R (measurement noise): "); Serial.println(R, 4);
+      Serial.println("Commands: '1'=Q[0][0]+, '2'=Q[0][0]-, '3'=Q[1][1]+, '4'=Q[1][1]-, '5'=R+, '6'=R-");
     }
     
     // Kalman filter real-time tuning
     if (rx_char == '1') {
-      Q_angle += 0.001;
-      if (Q_angle > 0.1) Q_angle = 0.1;
-      Serial.print("Q_angle increased to: "); Serial.println(Q_angle, 4);
+      Q[0][0] += 0.001;
+      if (Q[0][0] > 0.1) Q[0][0] = 0.1;
+      Serial.print("Q[0][0] (angle process noise) increased to: "); Serial.println(Q[0][0], 4);
     }
     if (rx_char == '2') {
-      Q_angle -= 0.001;
-      if (Q_angle < 0.0001) Q_angle = 0.0001;
-      Serial.print("Q_angle decreased to: "); Serial.println(Q_angle, 4);
+      Q[0][0] -= 0.001;
+      if (Q[0][0] < 0.0001) Q[0][0] = 0.0001;
+      Serial.print("Q[0][0] (angle process noise) decreased to: "); Serial.println(Q[0][0], 4);
     }
     if (rx_char == '3') {
-      Q_bias += 0.001;
-      if (Q_bias > 0.05) Q_bias = 0.05;
-      Serial.print("Q_bias increased to: "); Serial.println(Q_bias, 4);
+      Q[1][1] += 0.001;
+      if (Q[1][1] > 0.05) Q[1][1] = 0.05;
+      Serial.print("Q[1][1] (bias process noise) increased to: "); Serial.println(Q[1][1], 4);
     }
     if (rx_char == '4') {
-      Q_bias -= 0.001;
-      if (Q_bias < 0.0001) Q_bias = 0.0001;
-      Serial.print("Q_bias decreased to: "); Serial.println(Q_bias, 4);
+      Q[1][1] -= 0.001;
+      if (Q[1][1] < 0.0001) Q[1][1] = 0.0001;
+      Serial.print("Q[1][1] (bias process noise) decreased to: "); Serial.println(Q[1][1], 4);
     }
     if (rx_char == '5') {
-      R_measure += 0.1;
-      if (R_measure > 5.0) R_measure = 5.0;
-      Serial.print("R_measure increased to: "); Serial.println(R_measure, 4);
+      R += 0.1;
+      if (R > 5.0) R = 5.0;
+      Serial.print("R (measurement noise) increased to: "); Serial.println(R, 4);
     }
     if (rx_char == '6') {
-      R_measure -= 0.1;
-      if (R_measure < 0.01) R_measure = 0.01;
-      Serial.print("R_measure decreased to: "); Serial.println(R_measure, 4);
+      R -= 0.1;
+      if (R < 0.01) R = 0.01;
+      Serial.print("R (measurement noise) decreased to: "); Serial.println(R, 4);
     }
     
     // Magnetometer calibration
@@ -306,34 +321,70 @@ void loop() {
   }
 }
 
-// --- KALMAN FILTER FUNCTION ---
+// --- KALMAN FILTER FUNCTION (PROPER MATRIX IMPLEMENTATION) ---
 float kalmanFilter(float angle, float gyroRate, float accelAngle, float P[2][2], float &bias) {
-  // Predict
+  // State vector: x = [angle, bias]'
+  // Measurement: z = accelAngle
+  
+  // PREDICT STEP
+  // 1. State prediction: x_pred = F * x_prev + B * u
   float rate = gyroRate - bias;
-  angle += dt * rate;
+  angle += dt * rate;  // angle_pred = angle_prev + dt * (gyroRate - bias)
+  // bias prediction: bias remains the same (no control input)
   
-  P[0][0] += dt * (dt * P[1][1] - P[0][1] - P[1][0] + Q_angle);
-  P[0][1] -= dt * P[1][1];
-  P[1][0] -= dt * P[1][1];
-  P[1][1] += Q_bias * dt;
+  // 2. Covariance prediction: P_pred = F * P * F' + Q
+  // State transition matrix F = [1, -dt]
+  //                             [0,  1 ]
+  float F[2][2] = {{1.0, -dt}, {0.0, 1.0}};
   
-  // Update
-  float S = P[0][0] + R_measure; // Estimate error
-  float K[2];                    // Kalman gain
-  K[0] = P[0][0] / S;
-  K[1] = P[1][0] / S;
+  // Calculate F * P
+  float FP[2][2];
+  FP[0][0] = F[0][0] * P[0][0] + F[0][1] * P[1][0];  // 1*P00 + (-dt)*P10
+  FP[0][1] = F[0][0] * P[0][1] + F[0][1] * P[1][1];  // 1*P01 + (-dt)*P11
+  FP[1][0] = F[1][0] * P[0][0] + F[1][1] * P[1][0];  // 0*P00 + 1*P10
+  FP[1][1] = F[1][0] * P[0][1] + F[1][1] * P[1][1];  // 0*P01 + 1*P11
   
-  float y = accelAngle - angle; // Angle difference
-  angle += K[0] * y;
-  bias += K[1] * y;
+  // Calculate P_pred = (F * P) * F' + Q
+  P[0][0] = FP[0][0] * F[0][0] + FP[0][1] * F[1][0] + Q[0][0];  // + Q11
+  P[0][1] = FP[0][0] * F[0][1] + FP[0][1] * F[1][1] + Q[0][1];  // + Q12
+  P[1][0] = FP[1][0] * F[0][0] + FP[1][1] * F[1][0] + Q[1][0];  // + Q21
+  P[1][1] = FP[1][0] * F[0][1] + FP[1][1] * F[1][1] + Q[1][1];  // + Q22
   
-  float P00_temp = P[0][0];
-  float P01_temp = P[0][1];
+  // UPDATE STEP
+  // 1. Innovation: y = z - H * x_pred
+  // Measurement matrix H = [1, 0] (we measure angle directly)
+  float innovation = accelAngle - angle;  // z - H*x where H*x = 1*angle + 0*bias
   
-  P[0][0] -= K[0] * P00_temp;
-  P[0][1] -= K[0] * P01_temp;
-  P[1][0] -= K[1] * P00_temp;
-  P[1][1] -= K[1] * P01_temp;
+  // 2. Innovation covariance: S = H * P * H' + R
+  // S = [1, 0] * P * [1] + R = P[0][0] + R
+  //                   [0]
+  float S = P[0][0] + R;
+  
+  // 3. Kalman gain: K = P * H' * S^(-1)
+  float K[2];
+  K[0] = P[0][0] / S;  // P[0][0] * 1 / S
+  K[1] = P[1][0] / S;  // P[1][0] * 1 / S
+  
+  // 4. State update: x = x_pred + K * innovation
+  angle += K[0] * innovation;
+  bias += K[1] * innovation;
+  
+  // 5. Covariance update: P = (I - K * H) * P
+  // where (I - K * H) = [1-K[0], -K[1]*0] = [1-K[0],   0  ]
+  //                     [-K[1],   1     ]   [-K[1] ,   1  ]
+  float IKH[2][2] = {{1.0 - K[0], 0.0}, {-K[1], 1.0}};
+  
+  float P_temp[2][2];
+  P_temp[0][0] = IKH[0][0] * P[0][0] + IKH[0][1] * P[1][0];
+  P_temp[0][1] = IKH[0][0] * P[0][1] + IKH[0][1] * P[1][1];
+  P_temp[1][0] = IKH[1][0] * P[0][0] + IKH[1][1] * P[1][0];
+  P_temp[1][1] = IKH[1][0] * P[0][1] + IKH[1][1] * P[1][1];
+  
+  // Copy back to P
+  P[0][0] = P_temp[0][0];
+  P[0][1] = P_temp[0][1];
+  P[1][0] = P_temp[1][0];
+  P[1][1] = P_temp[1][1];
   
   return angle;
 }
