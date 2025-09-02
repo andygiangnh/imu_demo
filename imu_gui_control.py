@@ -32,6 +32,12 @@ class IMUSimulation:
         self.running = False
         self.screen = None
         
+        # Robot pose reference variables
+        self.robot_reference_roll = 0.0
+        self.robot_reference_pitch = 0.0
+        self.robot_reference_yaw = 0.0
+        self.robot_pose_set = False
+        
     def init_pygame(self):
         """Initialize pygame in separate window"""
         pygame.init()
@@ -99,6 +105,12 @@ class IMUSimulation:
                 osd_line = osd_text + f", yaw: {self.az:.2f}"
             else:
                 osd_line = osd_text
+            
+            # Add robot pose mode indicator
+            if self.robot_pose_set:
+                osd_line += " (Robot Relative)"
+            else:
+                osd_line += " (Absolute)"
 
             self.draw_text((-2, -2, 2), osd_line)
 
@@ -232,6 +244,13 @@ class IMUSimulation:
         except Exception as e:
             print(f"Error sending yaw toggle command: {e}")
 
+    def set_robot_reference(self, roll_ref, pitch_ref, yaw_ref):
+        """Set robot pose reference for relative angle calculations"""
+        self.robot_reference_roll = roll_ref
+        self.robot_reference_pitch = pitch_ref
+        self.robot_reference_yaw = yaw_ref
+        self.robot_pose_set = True
+
     def stop(self):
         """Stop the simulation"""
         self.running = False
@@ -289,6 +308,12 @@ class IMUControlGUI:
         self.pygame_thread = None
         self.calibration_status = "idle"  # "idle", "gyro", "mag"
         self.calibration_thread = None
+        
+        # Robot pose reference variables
+        self.robot_reference_roll = 0.0
+        self.robot_reference_pitch = 0.0
+        self.robot_reference_yaw = 0.0
+        self.robot_pose_set = False
         
         self.setup_gui()
         # Show initial instructions
@@ -365,7 +390,8 @@ class IMUControlGUI:
             ("Raw Data", "r"),
             ("Heading", "h"),
             ("🧭 Cal Mag", "m"),
-            ("🔄 Cal Gyro", "c")
+            ("🔄 Cal Gyro", "c"),
+            ("🤖 Reset Robot Pose", "reset_pose")
         ]
         
         for i, (text, cmd) in enumerate(commands):
@@ -464,6 +490,11 @@ class IMUControlGUI:
         if not self.ser:
             self.log_response("Error: Not connected to Arduino")
             return
+        
+        # Handle special commands
+        if command == "reset_pose":
+            self.reset_robot_pose()
+            return
             
         try:
             self.ser.write(command.encode())
@@ -492,6 +523,66 @@ class IMUControlGUI:
         """Enable all command buttons after calibration"""
         for btn in self.command_buttons.values():
             btn.configure(state='normal')
+    
+    def reset_robot_pose(self):
+        """Reset robot pose reference to current IMU orientation"""
+        if not self.ser:
+            self.log_response("Error: Not connected to Arduino")
+            return
+        
+        try:
+            # Request current angles from Arduino
+            self.ser.write(b'.')
+            time.sleep(0.1)  # Wait for response
+            
+            # Read the response
+            if self.ser.in_waiting > 0:
+                response = self.ser.readline().decode().strip()
+                if response:
+                    try:
+                        # Parse the angles (format: "roll, pitch, yaw")
+                        angles = [float(x.strip()) for x in response.split(',')]
+                        if len(angles) == 3:
+                            self.robot_reference_roll = angles[0]
+                            self.robot_reference_pitch = angles[1] 
+                            self.robot_reference_yaw = angles[2]
+                            self.robot_pose_set = True
+                            
+                            # Also send 'p' command to Arduino to set reference there
+                            time.sleep(0.1)  # Small delay
+                            self.ser.write(b'p')
+                            time.sleep(0.1)  # Wait for Arduino response
+                            
+                            # Read Arduino confirmation
+                            if self.ser.in_waiting > 0:
+                                arduino_response = self.ser.readline().decode().strip()
+                                if arduino_response:
+                                    self.log_response(f"Arduino: {arduino_response}")
+                            
+                            self.log_response("🤖 Robot pose reference set!")
+                            self.log_response(f"   Reference Roll:  {self.robot_reference_roll:.2f}°")
+                            self.log_response(f"   Reference Pitch: {self.robot_reference_pitch:.2f}°")
+                            self.log_response(f"   Reference Yaw:   {self.robot_reference_yaw:.2f}°")
+                            self.log_response("Current IMU orientation is now 'robot facing right on flat surface'")
+                            
+                            # Update simulation if running
+                            if hasattr(self, 'simulation') and self.simulation:
+                                self.simulation.set_robot_reference(
+                                    self.robot_reference_roll,
+                                    self.robot_reference_pitch, 
+                                    self.robot_reference_yaw
+                                )
+                        else:
+                            self.log_response("Error: Invalid angle data received")
+                    except ValueError:
+                        self.log_response("Error: Could not parse angle data")
+                else:
+                    self.log_response("Error: No response from Arduino")
+            else:
+                self.log_response("Error: No data received from Arduino")
+                
+        except Exception as e:
+            self.log_response(f"Error setting robot pose: {e}")
     
     def start_calibration_monitoring(self, cal_type):
         """Start monitoring calibration progress"""

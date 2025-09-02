@@ -70,8 +70,9 @@ KEY PARAMETERS:
 
 COMMANDS:
 ================================================================================
-- '.' : Get current angles (roll, pitch, yaw)
+- '.' : Get current angles (roll, pitch, yaw) - returns relative angles if robot pose is set
 - 'z' : Reset yaw to 0° and update magnetometer reference
+- 'p' : Set robot pose reference (current angles become reference for robot pose)
 - 'm' : Calibrate magnetometer (rotate device for 30 seconds)
       - Response: m1 = in progress, m2 = completed
 - 'r' : Show raw sensor data
@@ -134,6 +135,12 @@ float magHeadingChangeThreshold = 15.0;  // Threshold for sudden heading changes
 float magFieldChangeThreshold = 0.15;    // Threshold for magnetic field strength changes (15%)
 bool magEnvironmentChanged = false;      // Flag for magnetic environment change
 unsigned long magEnvironmentChangeTime = 0; // Time when environment change was detected
+
+// Robot pose reference variables
+float robotReferenceRoll = 0.0;   // Reference roll angle for robot pose
+float robotReferencePitch = 0.0;  // Reference pitch angle for robot pose
+float robotReferenceYaw = 0.0;    // Reference yaw angle for robot pose
+bool robotPoseSet = false;        // Flag indicating if robot reference is set
 
 // calibration variables
 bool isCalibrated = false;
@@ -310,11 +317,29 @@ void loop() {
     // Send current angle data
     if (rx_char == '.') {
       digitalWrite(13, HIGH);
-      Serial.print(gx, 2);
-      Serial.print(", ");
-      Serial.print(gy, 2);
-      Serial.print(", ");
-      Serial.println(gz, 2);
+      if (robotPoseSet) {
+        // Send relative angles when robot pose is set
+        float relativeRoll = gx - robotReferenceRoll;
+        float relativePitch = gy - robotReferencePitch;
+        float relativeYaw = gz - robotReferenceYaw;
+        
+        // Handle yaw wraparound (keep between -180 and +180)
+        while (relativeYaw > 180.0) relativeYaw -= 360.0;
+        while (relativeYaw < -180.0) relativeYaw += 360.0;
+        
+        Serial.print(relativeRoll, 2);
+        Serial.print(", ");
+        Serial.print(relativePitch, 2);
+        Serial.print(", ");
+        Serial.println(relativeYaw, 2);
+      } else {
+        // Send absolute angles when robot pose is not set
+        Serial.print(gx, 2);
+        Serial.print(", ");
+        Serial.print(gy, 2);
+        Serial.print(", ");
+        Serial.println(gz, 2);
+      }
       digitalWrite(13, LOW);
     }
     
@@ -381,6 +406,20 @@ void loop() {
       float heading = calculateTiltCompensatedHeading();
       Serial.print("Magnetometer heading: ");
       Serial.println(heading, 2);
+    }
+    
+    // Reset robot pose reference
+    if (rx_char == 'p') {
+      robotReferenceRoll = gx;
+      robotReferencePitch = gy;
+      robotReferenceYaw = gz;
+      robotPoseSet = true;
+      Serial.print("Robot pose reference set to: ");
+      Serial.print(robotReferenceRoll, 2);
+      Serial.print(", ");
+      Serial.print(robotReferencePitch, 2);
+      Serial.print(", ");
+      Serial.println(robotReferenceYaw, 2);
     }
   }
   
