@@ -333,40 +333,56 @@ float kalmanFilter(float angle, float gyroRate, float accelAngle, float P[2][2],
   // bias prediction: bias remains the same (no control input)
   
   // 2. Covariance prediction: P_pred = F * P * F' + Q
-  // State transition matrix F = [1, -dt]
-  //                             [0,  1 ]
-  float F[2][2] = {{1.0, -dt}, {0.0, 1.0}};
+  // 
+  // WHY THIS STEP EXISTS:
+  // - P matrix tracks our uncertainty (how confident we are in our estimates)
+  // - F matrix models how the system evolves over time  
+  // - This step propagates uncertainty through the system dynamics
+  // - Without this, we wouldn't know how much to trust our predictions
+  //
+  // State transition matrix F models: angle_new = angle_old + dt*(gyro - bias)
+  //                                   bias_new = bias_old (bias persists)
+  float F[2][2] = {{1.0, -dt}, {0.0, 1.0}};  // F = [1  -dt]  ← bias affects angle
+                                              //     [0   1 ]  ← bias persists
   
-  // Calculate F * P
+  // Calculate F * P (intermediate step for efficiency and readability)
+  // FP represents "how does current uncertainty transform through system dynamics"
   float FP[2][2];
-  FP[0][0] = F[0][0] * P[0][0] + F[0][1] * P[1][0];  // 1*P00 + (-dt)*P10
-  FP[0][1] = F[0][0] * P[0][1] + F[0][1] * P[1][1];  // 1*P01 + (-dt)*P11
-  FP[1][0] = F[1][0] * P[0][0] + F[1][1] * P[1][0];  // 0*P00 + 1*P10
-  FP[1][1] = F[1][0] * P[0][1] + F[1][1] * P[1][1];  // 0*P01 + 1*P11
+  FP[0][0] = F[0][0] * P[0][0] + F[0][1] * P[1][0];  // How angle uncertainty evolves
+  FP[0][1] = F[0][0] * P[0][1] + F[0][1] * P[1][1];  // How angle-bias correlation evolves  
+  FP[1][0] = F[1][0] * P[0][0] + F[1][1] * P[1][0];  // How bias-angle correlation evolves
+  FP[1][1] = F[1][0] * P[0][1] + F[1][1] * P[1][1];  // How bias uncertainty evolves
   
   // Calculate P_pred = (F * P) * F' + Q
-  P[0][0] = FP[0][0] * F[0][0] + FP[0][1] * F[1][0] + Q[0][0];  // + Q11
-  P[0][1] = FP[0][0] * F[0][1] + FP[0][1] * F[1][1] + Q[0][1];  // + Q12
-  P[1][0] = FP[1][0] * F[0][0] + FP[1][1] * F[1][0] + Q[1][0];  // + Q21
-  P[1][1] = FP[1][0] * F[0][1] + FP[1][1] * F[1][1] + Q[1][1];  // + Q22
+  // This completes uncertainty propagation and adds process noise
+  P[0][0] = FP[0][0] * F[0][0] + FP[0][1] * F[1][0] + Q[0][0];  // Angle variance + process noise
+  P[0][1] = FP[0][0] * F[0][1] + FP[0][1] * F[1][1] + Q[0][1];  // Angle-bias covariance
+  P[1][0] = FP[1][0] * F[0][0] + FP[1][1] * F[1][0] + Q[1][0];  // Bias-angle covariance
+  P[1][1] = FP[1][0] * F[0][1] + FP[1][1] * F[1][1] + Q[1][1];  // Bias variance + process noise
   
-  // UPDATE STEP
-  // 1. Innovation: y = z - H * x_pred
-  // Measurement matrix H = [1, 0] (we measure angle directly)
-  float innovation = accelAngle - angle;  // z - H*x where H*x = 1*angle + 0*bias
+  // UPDATE STEP - This is where we incorporate the accelerometer measurement
+  //
+  // WHY THIS STEP EXISTS:
+  // - We have a prediction, but it's just based on gyro integration (which drifts)
+  // - The accelerometer gives us an absolute angle reference (gravity direction)
+  // - This step optimally combines prediction + measurement based on their uncertainties
+  // - The P matrix tells us how much to trust each source
   
-  // 2. Innovation covariance: S = H * P * H' + R
-  // S = [1, 0] * P * [1] + R = P[0][0] + R
-  //                   [0]
-  float S = P[0][0] + R;
+  // 1. Innovation: How much does measurement disagree with prediction?
+  float innovation = accelAngle - angle;  // Measurement - Prediction
   
-  // 3. Kalman gain: K = P * H' * S^(-1)
+  // 2. Innovation covariance: How uncertain is this disagreement?
+  // S represents total uncertainty in the innovation (prediction uncertainty + measurement noise)
+  float S = P[0][0] + R;  // Prediction uncertainty + Accelerometer noise
+  
+  // 3. Kalman gain: How much should we trust the measurement vs prediction?
+  // K is the "optimal blending factor" - this is the magic of Kalman filtering!
   float K[2];
-  K[0] = P[0][0] / S;  // P[0][0] * 1 / S
-  K[1] = P[1][0] / S;  // P[1][0] * 1 / S
+  K[0] = P[0][0] / S;  // How much to correct angle estimate (0 to 1)
+  K[1] = P[1][0] / S;  // How much to correct bias estimate (can be negative)
   
-  // 4. State update: x = x_pred + K * innovation
-  angle += K[0] * innovation;
+  // 4. State update: Blend prediction with measurement using optimal weights
+  angle += K[0] * innovation;  // New angle = prediction + optimal_weight * disagreement
   bias += K[1] * innovation;
   
   // 5. Covariance update: P = (I - K * H) * P
